@@ -9,9 +9,6 @@ To run the simulator on Mac/Linux, first make the binary file executable with th
 sudo chmod u+x {simulator_file_name}
 ```
 
-### Goals
-In this project your goal is to safely navigate around a virtual highway with other traffic that is driving +-10 MPH of the 50 MPH speed limit. You will be provided the car's localization and sensor fusion data, there is also a sparse map list of waypoints around the highway. The car should try to go as close as possible to the 50 MPH speed limit, which means passing slower traffic when possible, note that other cars will try to change lanes too. The car should avoid hitting other cars at all cost as well as driving inside of the marked road lanes at all times, unless going from one lane to another. The car should be able to make one complete loop around the 6946m highway. Since the car is trying to go 50 MPH, it should take a little over 5 minutes to complete 1 loop. Also the car should not experience total acceleration over 10 m/s^2 and jerk that is greater than 10 m/s^3.
-
 #### The map of the highway is in data/highway_map.txt
 Each waypoint in the list contains  [x,y,s,dx,dy] values. x and y are the waypoint's map coordinate position, the s value is the distance along the road to get to that waypoint in meters, the dx and dy values define the unit normal vector pointing outward of the highway loop.
 
@@ -61,13 +58,13 @@ the path has processed since last time.
 
 ## Details
 
-1. The car uses a perfect controller and will visit every (x,y) point it recieves in the list every .02 seconds. The units for the (x,y) points are in meters and the spacing of the points determines the speed of the car. The vector going from a point to the next point in the list dictates the angle of the car. Acceleration both in the tangential and normal directions is measured along with the jerk, the rate of change of total Acceleration. The (x,y) point paths that the planner recieves should not have a total acceleration that goes over 10 m/s^2, also the jerk should not go over 50 m/s^3. (NOTE: As this is BETA, these requirements might change. Also currently jerk is over a .02 second interval, it would probably be better to average total acceleration over 1 second and measure jerk from that.
+1. The car uses a perfect controller and will visit every (x,y) point it recieves in the list every .02 seconds. The units for the (x,y) points are in meters and the spacing of the points determines the speed of the car. The vector going from a point to the next point in the list dictates the angle of the car. Acceleration both in the tangential and normal directions is measured along with the jerk, the rate of change of total Acceleration.
 
-2. There will be some latency between the simulator running and the path planner returning a path, with optimized code usually its not very long maybe just 1-3 time steps. During this delay the simulator will continue using points that it was last given, because of this its a good idea to store the last points you have used so you can have a smooth transition. previous_path_x, and previous_path_y can be helpful for this transition since they show the last points given to the simulator controller with the processed points already removed. You would either return a path that extends this previous path or make sure to create a new path that has a smooth transition with this last path.
+2. There will be some latency between the simulator running and the path planner returning a path, with optimized code usually its not very long maybe just 1-3 time steps. During this delay the simulator will continue using points that it was last given, because of this we store the last points which have been used so the car can have a smooth transition. previous_path_x, and previous_path_y are used for this transition since they show the last points given to the simulator controller with the processed points already removed. We return a path that extends this previous path.
 
-## Tips
+## spline
 
-A really helpful resource for doing this project and creating smooth trajectories was using http://kluge.in-chemnitz.de/opensource/spline/, the spline function is in a single hearder file is really easy to use.
+A really helpful resource for doing this project and creating smooth trajectories was using http://kluge.in-chemnitz.de/opensource/spline/, the spline function is in a single hearder file added to source directory.
 
 ---
 
@@ -92,54 +89,88 @@ A really helpful resource for doing this project and creating smooth trajectorie
     git checkout e94b6e1
     ```
 
-## Editor Settings
+## Path planning strategy
 
-We've purposefully kept editor configuration files out of this repo in order to
-keep it as simple and environment agnostic as possible. However, we recommend
-using the following settings:
+The Car starts in the middle lane at the begining and speeds up until it gets to the slightly less than the maximum allowed speed, namely 50 mph. If there is a car ahead of the car and its speed is below our car, it checks possible lane change to maintain maximum speed and if it is not possible, reduces its speed to the speed of the car ahead of it. The preferred lane is middle lane, so if the middle lane is safe and faster to drive, car will change to it. It allows us to have more possiblity to select faster and safer action in next comming situation. The corresponding code lines to implement this strategy (a finite state machine) is in path_planner.cpp line 116 to line 137.
 
-* indent using spaces
-* set tab width to 2 spaces (keeps the matrices in source code aligned)
+```
+if (too_close)
+{
+    if (lane_==0) {
+        if (!middle_lane) lane_++;
+        else if (vel_>lane_speed[0]) vel_ -= 0.5; //0.224
+    }
+    else if (lane_==1) {
+        if (!left_lane) lane_ = 0;
+        else if (!right_lane) lane_ = 2;
+        else if (vel_>lane_speed[1]) vel_ -= 0.5; //0.224
+    }
+    else {
+        if (!middle_lane) lane_--;
+        else if (vel_>lane_speed[2]) vel_ -= 0.5; //0.224
+    }
+} else if (vel_ < ref_vel_)
+{
+    vel_ += 0.32; //0.224
+    
+} else if (lane_ != 1 && !middle_lane) {
+    lane_ = 1;
+}
+```
 
-## Code Style
+## Prediction
 
-Please (do your best to) stick to [Google's C++ style guide](https://google.github.io/styleguide/cppguide.html).
+It is considered to predict the position of other traffic participents ahead of time, in order to make decision base of lane speeds and colision avoidance using sensor fusion data. We make a list of cars for each line that in near future will be inbetween 5 meters behind and 40 meters ahead of our self driving car. The speed of nearst car ahead of our car in each lane will be save simultaneuosly to track that speed in case we can not pass through the traffic. The corresponding code is from line 48 to line 93 in path_planner.cpp.
 
-## Project Instructions and Rubric
+```
+vector<vector<double>> left_lane_traffic;
+vector<vector<double>> middle_lane_traffic;
+vector<vector<double>> right_lane_traffic;
+for (int i=0; i<sensor_fusion.size(); i++)
+{
+    float d = sensor_fusion[i][6];
+    double vx = sensor_fusion[i][3];
+    double vy = sensor_fusion[i][4];
+    double check_speed = sqrt(vx*vx+vy*vy);
+    double check_car_s = sensor_fusion[i][5];
 
-Note: regardless of the changes you make, your project must be buildable using
-cmake and make!
+    check_car_s += (double)prev_size*0.02*check_speed;
+    vector<double> check_car = {check_car_s, check_speed};
+    if ((check_car_s+5 > car_s) && ((check_car_s-car_s) < 40))
+    {
+        if (d>0 && d<4) left_lane_traffic.push_back(check_car);
+        else if (d>4 && d<8) middle_lane_traffic.push_back(check_car);
+        else if(d>8 && d<12) right_lane_traffic.push_back(check_car);
+    }
 
+}
+vector<double> lane_speed{ref_vel_,ref_vel_,ref_vel_};
+bool left_lane = 0;
+bool middle_lane = 0;
+bool right_lane = 0; 
+if (!left_lane_traffic.empty())
+{
+    std::sort (left_lane_traffic.begin(), left_lane_traffic.end(),
+            [](vector<double> a, vector<double> b){ return (a[0] < b[0]); });
+    left_lane = 1;
+    lane_speed[0] = left_lane_traffic[0][1]*2.24;
+}
+if (!middle_lane_traffic.empty())
+{
+    std::sort (middle_lane_traffic.begin(), middle_lane_traffic.end(),
+            [](vector<double> a, vector<double> b){ return (a[0] < b[0]); });
+    middle_lane = 1;
+    lane_speed[1] = middle_lane_traffic[0][1]*2.24;
+}
+if (!right_lane_traffic.empty())
+{
+    std::sort (right_lane_traffic.begin(), right_lane_traffic.end(),
+            [](vector<double> a, vector<double> b){ return (a[0] < b[0]); });
+    right_lane = 1;
+    lane_speed[2] = right_lane_traffic[0][1]*2.24;
+}
+```
 
-## Call for IDE Profiles Pull Requests
+## Trajectory generator
 
-Help your fellow students!
-
-We decided to create Makefiles with cmake to keep this project as platform
-agnostic as possible. Similarly, we omitted IDE profiles in order to ensure
-that students don't feel pressured to use one IDE or another.
-
-However! I'd love to help people get up and running with their IDEs of choice.
-If you've created a profile for an IDE that you think other students would
-appreciate, we'd love to have you add the requisite profile files and
-instructions to ide_profiles/. For example if you wanted to add a VS Code
-profile, you'd add:
-
-* /ide_profiles/vscode/.vscode
-* /ide_profiles/vscode/README.md
-
-The README should explain what the profile does, how to take advantage of it,
-and how to install it.
-
-Frankly, I've never been involved in a project with multiple IDE profiles
-before. I believe the best way to handle this would be to keep them out of the
-repo root to avoid clutter. My expectation is that most profiles will include
-instructions to copy files to a new location to get picked up by the IDE, but
-that's just a guess.
-
-One last note here: regardless of the IDE used, every submitted project must
-still be compilable with cmake and make./
-
-## How to write a README
-A well written README file can enhance your project and portfolio.  Develop your abilities to create professional README files by completing [this free course](https://www.udacity.com/course/writing-readmes--ud777).
-
+We have used spline for generating the path we planned to pass. The code can be addressed in path_planning.cpp file from line 139 to line 235.
